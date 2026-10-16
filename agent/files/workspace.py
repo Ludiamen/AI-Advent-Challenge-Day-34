@@ -143,24 +143,30 @@ class Копия:
     # --- ветка случаев --------------------------------------------------------------------------
 
     def построить_случаи(self, случаи: dict[str, Any], база: str = "") -> str:
-        """Ветка посеянных случаев (files-cases.json) от базы: один коммит, дата и автор фиксированы."""
-        база = self.хэш(база or self.база)
-        путь, env = self._индекс(база)
-        try:
-            for с in случаи["случаи"]:
-                объект = self.git("hash-object", "-w", "--stdin", вход=с["создать"]).strip()
-                self.git("update-index", "--add", "--cacheinfo", f"100644,{объект},{с['файл']}", окружение=env)
-            дерево = self.git("write-tree", окружение=env).strip()
-        finally:
-            if os.path.exists(путь):
-                os.unlink(путь)
+        """Ветка посеянных случаев (files-cases.json) от базы: по коммиту на группу «коммиты» (сообщения —
+        обычные, без подсказок модели), дата и автор фиксированы — тот же вход даёт тот же хэш. Вернуть
+        хэш последнего коммита."""
+        родитель = self.хэш(база or self.база)
+        коммиты = случаи.get("коммиты") or [{"id": "", "сообщение": "Правки"}]
         автор = dict(GIT_AUTHOR_NAME=АВТОР[0], GIT_AUTHOR_EMAIL=АВТОР[1], GIT_AUTHOR_DATE=ДАТА_СЛУЧАЕВ,
                      GIT_COMMITTER_NAME=АВТОР[0], GIT_COMMITTER_EMAIL=АВТОР[1], GIT_COMMITTER_DATE=ДАТА_СЛУЧАЕВ)
-        коммит = self.git("commit-tree", дерево, "-p", база, "-F", "-",
-                          вход=f"Посеянные случаи ({', '.join(с['id'] for с in случаи['случаи'])})",
-                          окружение=_окружение(**автор)).strip()
-        self.git("update-ref", f"refs/heads/{случаи['ветка']}", коммит)
-        return коммит
+        for к in коммиты:
+            свои = [с for с in случаи["случаи"] if (с.get("коммит") or "") == к["id"]]
+            if not свои:
+                continue
+            путь, env = self._индекс(родитель)
+            try:
+                for с in свои:
+                    объект = self.git("hash-object", "-w", "--stdin", вход=с["создать"]).strip()
+                    self.git("update-index", "--add", "--cacheinfo", f"100644,{объект},{с['файл']}", окружение=env)
+                дерево = self.git("write-tree", окружение=env).strip()
+            finally:
+                if os.path.exists(путь):
+                    os.unlink(путь)
+            родитель = self.git("commit-tree", дерево, "-p", родитель, "-F", "-", вход=к["сообщение"],
+                                окружение=_окружение(**автор)).strip()
+        self.git("update-ref", f"refs/heads/{случаи['ветка']}", родитель)
+        return родитель
 
 
 def из_проекта(имя: str = "crm", путь_конфига: str = "") -> Копия:

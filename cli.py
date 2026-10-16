@@ -977,6 +977,27 @@ def build_parser() -> argparse.ArgumentParser:
     под.add_argument("--поддержка-сброс", dest="support_reset", action="store_true",
                      help="вернуть данные сервис-деска к support-seed.json")
 
+    фл = parser.add_argument_group("ассистент для работы с файлами проекта (День 34)")
+    фл.add_argument("--файлы-цель", dest="files_goal", nargs="+", default=None, metavar="ЦЕЛЬ",
+                    help="цель на естественном языке («найди, где …», «обнови README по коду», «составь ADR …», "
+                         "«проверь правила …»): ассистент сам ищет и читает файлы копии проекта, готовит находки "
+                         "и черновик правок (diff); в файлы — только после --файлы-применить")
+    фл.add_argument("--файлы-база", dest="files_base", default="", metavar="ССЫЛКА",
+                    help="коммит или ветка копии вместо базы из projects.json (например cases/day34)")
+    фл.add_argument("--файлы-задачи", dest="files_tasks", action="store_true", help="последние задачи и их статус")
+    фл.add_argument("--файлы-показать", dest="files_show", type=int, default=0, metavar="N",
+                    help="задача N: итог, находки с проверкой, diff черновика")
+    фл.add_argument("--файлы-применить", dest="files_apply", type=int, default=0, metavar="N",
+                    help="записать черновик задачи N в копию проекта: коммит на ветке assistant/N")
+    фл.add_argument("--файлы-отклонить", dest="files_reject", nargs="+", default=None, metavar="N",
+                    help="отклонить черновик задачи N [причина]: файлы не меняются")
+    фл.add_argument("--файлы-повторить", dest="files_repeat", type=int, default=0, metavar="N",
+                    help="та же цель на той же базе — новая задача и сравнение файлов и находок с N")
+    фл.add_argument("--файлы-случаи", dest="files_cases", action="store_true",
+                    help="построить в копии ветку посеянных случаев (files-cases.json) для контрольных целей")
+    фл.add_argument("--файлы-метрики", dest="files_metrics", action="store_true",
+                    help="метрики задач без текстов: p50/p95, круги, прочитано, стоимость, применено/отклонено")
+
     рев = parser.add_argument_group("AI-ревью PR (День 32)")
     рев.add_argument("--ревью", dest="review", nargs="?", const="main...HEAD", default=None, metavar="ДИАПАЗОН",
                      help="AI-ревью диапазона как PR (база...голова, по умолчанию main...HEAD): три ревьюера "
@@ -1317,6 +1338,160 @@ def поддержка_cli(аргументы) -> int | None:
         print(f"Ошибка: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+# --- ассистент файлов (День 34) -----------------------------------------------------
+
+def _цвет_diff(diff: str) -> str:
+    if not sys.stdout.isatty():
+        return diff
+    цвета = []
+    for с in diff.splitlines():
+        if с.startswith(("+++", "---", "diff --git")):
+            цвета.append(f"\033[1m{с}\033[0m")
+        elif с.startswith("+"):
+            цвета.append(f"\033[32m{с}\033[0m")
+        elif с.startswith("-"):
+            цвета.append(f"\033[31m{с}\033[0m")
+        elif с.startswith("@@"):
+            цвета.append(f"\033[36m{с}\033[0m")
+        else:
+            цвета.append(с)
+    return "\n".join(цвета)
+
+
+def показать_задачу_файлов(з, diff: bool = True) -> None:
+    print(LINE)
+    print(f"Задача {з.id} — {з.статус} · {з.модель} · база {з.база[:10]} · кругов {з.круги}, вызовов {len(з.вызовы)}, "
+          f"прочитано файлов {len(з.прочитаны)}, изменено {len(з.изменены)} · {з.токены_вход}+{з.токены_выход} ток. · "
+          f"${з.стоимость:.4f} · {з.секунд} с")
+    print(f"Цель: {з.цель}")
+    print(LINE)
+    print(з.итог)
+    if з.находки:
+        print(f"\nНаходки ({sum(1 for н in з.находки if н.get('подтверждена'))} из {len(з.находки)} подтверждены кодом):")
+        for н in з.находки:
+            знак = "✓" if н.get("подтверждена") else "❔"
+            роль = н.get("правило") or н.get("роль") or ""
+            print(f"  {знак} {н['файл']}:{н['строка']}{f' [{роль}]' if роль else ''} — {н.get('суть', '')}")
+            if н.get("цитата"):
+                print(f"      «{н['цитата'][:160]}»" + (f"  ({н['пометка']})" if н.get("пометка") else ""))
+    if з.прочитаны:
+        print("\nПрочитаны: " + ", ".join(з.прочитаны[:20]) + (" …" if len(з.прочитаны) > 20 else ""))
+    if з.diff and diff:
+        print(f"\nЧерновик правок ({', '.join(з.изменены)}), применяется к базе: "
+              f"{'да' if з.проверка.get('применяется') else 'нет — ' + str(з.проверка.get('причина', ''))[:120]}")
+        if з.правки:
+            print(f"  {з.правки}")
+        for путь, замечания in (з.проверка.get("adr") or {}).items():
+            print(f"  ADR {путь}: " + ("по шаблону проекта ✓" if not замечания else "; ".join(замечания)))
+        sdd = з.проверка.get("sdd") or {}
+        if sdd.get("есть") and "ошибок_после" in sdd:
+            print(f"  tools/sdd.py проекта: ошибок до {sdd['ошибок_до']}, после {sdd['ошибок_после']}"
+                  + (f" — новые: {'; '.join(sdd['новые'][:3])}" if sdd.get("новые") else ""))
+        print(_цвет_diff(з.diff))
+    for п in з.пометки:
+        print(f"⚠ {п}")
+    if з.сравнение:
+        с = з.сравнение
+        print(f"Повтор задачи {з.повтор_от}: изменённые файлы совпали на {с['файлы_совпадение']:.0%} "
+              f"({', '.join(с['файлы']['было']) or '—'} → {', '.join(с['файлы']['стало']) or '—'}), "
+              f"находки — на {с['находки_совпадение']:.0%}")
+    if з.статус == "применена":
+        print(f"Применена: ветка {з.ветка}, коммит {з.коммит[:10]}")
+    elif з.статус == "отклонена":
+        print(f"Отклонена: {з.решение.get('причина', '')}")
+
+
+def файлы_cli(аргументы) -> int | None:
+    """Ключи ассистента файлов. None — ни одного такого ключа не было."""
+    ключи = ("files_goal", "files_tasks", "files_show", "files_apply", "files_reject", "files_repeat", "files_cases",
+             "files_metrics")
+    if not any(getattr(аргументы, к, None) for к in ключи):
+        return None
+    from agent.files import metrics as фм
+    from agent.files import task, workspace
+    хр = task.Хранилище()
+    if аргументы.files_metrics:
+        с = фм.сводка(фм.прочитать(хр.метрики))
+        итоги = ", ".join(f"{к} {в}" for к, в in с["итоги"].items()) or "—"
+        print(f"Задач: {с['задач']} ({итоги}); p50 {с['p50_с']} с, p95 {с['p95_с']} с; кругов в среднем "
+              f"{с['кругов_в_среднем']}, прочитано файлов {с['прочитано_в_среднем']}; ${с['стоимость_на_задачу']} на "
+              f"задачу; применено {с['применено']}, отклонено {с['отклонено']}.")
+        return 0
+    if аргументы.files_tasks:
+        for з in хр.список():
+            print(f"{з.id:>3}  {з.статус:<20} {з.создана[5:16].replace('T', ' ')}  изменено {len(з.изменены)}, "
+                  f"находок {len(з.находки)}  {з.цель[:70]}")
+        return 0
+    if аргументы.files_show:
+        try:
+            показать_задачу_файлов(хр.загрузить(аргументы.files_show))
+        except KeyError as exc:
+            print(f"Ошибка: {exc.args[0]}", file=sys.stderr)
+            return 1
+        return 0
+    проект = аргументы.project or "crm"
+    try:
+        копия = workspace.из_проекта(проект)
+    except workspace.ОшибкаКопии as exc:
+        print(f"Ошибка: {exc}", file=sys.stderr)
+        return 1
+    if аргументы.files_apply or аргументы.files_reject:
+        try:
+            if аргументы.files_apply:
+                копия.подготовить()
+                з = хр.применить(аргументы.files_apply, копия, кто="консоль")
+                print(f"Задача {з.id} применена: ветка {з.ветка}, коммит {з.коммит[:10]} в копии {копия.каталог} "
+                      f"(изменено: {', '.join(з.изменены)}).")
+            else:
+                номер, *причина = аргументы.files_reject
+                з = хр.отклонить(int(номер), " ".join(причина), кто="консоль")
+                print(f"Задача {з.id} отклонена — файлы не менялись.")
+        except (KeyError, ValueError, workspace.ОшибкаКопии) as exc:
+            print(f"Ошибка: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+            return 1
+        фм.записать({"событие": "решение", "задача": з.id, "канал": "консоль",
+                     "решение": "применить" if аргументы.files_apply else "отклонить"}, хр.метрики)
+        return 0
+    if аргументы.files_cases:
+        копия.подготовить()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "files-cases.json"), encoding="utf-8") as f:
+            случаи = json.load(f)
+        коммит = копия.построить_случаи(случаи)
+        print(f"Ветка {случаи['ветка']} в копии {копия.каталог}: коммит {коммит[:10]} от базы {копия.база} — "
+              f"{', '.join(с['id'] for с in случаи['случаи'])}.")
+        return 0
+    from agent.devassist import project
+    from agent.files.assistant import Ассистент
+    описание = project.загрузить(проект).описание
+
+    def ход(с: dict) -> None:
+        if с["этап"] == "инструмент":
+            арг = ", ".join(f"{к}={в}" for к, в in (с.get("аргументы") or {}).items())[:110]
+            print(f"    ↳ {с['подпись']}({арг})", flush=True)
+        elif с["этап"] in ("модель", "проверка", "копия"):
+            print(f"  · {с.get('подпись', с['этап'])}", flush=True)
+    ассистент = Ассистент(копия, хр, модель=аргументы.model or "ds-flash", описание=описание, ход=ход)
+    try:
+        if аргументы.files_repeat:
+            з = ассистент.повторить(аргументы.files_repeat)
+        else:
+            з = ассистент.выполнить(" ".join(аргументы.files_goal), база=аргументы.files_base)
+    except (KeyError, ValueError, workspace.ОшибкаКопии) as exc:
+        print(f"Ошибка: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 1
+    показать_задачу_файлов(з)
+    if з.статус == "ждёт подтверждения":
+        if sys.stdin.isatty():
+            ответ_ = input(f"Применить черновик задачи {з.id} к копии проекта? [д/Н] ").strip().lower()
+            if ответ_ in ("д", "да", "y", "yes"):
+                з = хр.применить(з.id, копия, кто="консоль")
+                фм.записать({"событие": "решение", "задача": з.id, "канал": "консоль", "решение": "применить"}, хр.метрики)
+                print(f"Применена: ветка {з.ветка}, коммит {з.коммит[:10]}.")
+                return 0
+        print(f"Задача {з.id} ждёт подтверждения: --файлы-применить {з.id} или --файлы-отклонить {з.id} «причина».")
+    return 2 if з.статус == "не выполнено" else 0
 
 
 # --- AI-ревью PR (День 32) ---------------------------------------------------------
@@ -4785,6 +4960,10 @@ def _main(аргументы) -> int:
         return код
     # День 33: поддержка — свой мини-сервис-деск, агент не нужен.
     код = поддержка_cli(аргументы)
+    if код is not None:
+        return код
+    # День 34: ассистент файлов — свой цикл с сервером files, агент не нужен.
+    код = файлы_cli(аргументы)
     if код is not None:
         return код
 
