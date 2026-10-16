@@ -1,0 +1,54 @@
+{
+ "описание": "Посеянные случаи Дня 34 (specs/034-file-assistant, plan D-10): правки поверх базового коммита копии CRM, из которых код строит ветку cases/day34. Нарушения конституции — по одному на правило с регулярками и словами (эталон — tools/sdd.py проверить в копии); расхождение документации — новый инструмент в tools/, которого нет в README. Код и тексты случаев синтетические: в рабочую копию владельца не попадают.",
+ "ветка": "cases/day34",
+ "случаи": [
+  {
+   "id": "V1",
+   "вид": "нарушение",
+   "правило": "стек-бэкенд",
+   "файл": "backend/apps/core/services/export_queue.py",
+   "создать": "\"\"\"Очередь выгрузок журнала: тяжёлая выгрузка уходит в фон.\"\"\"\nfrom celery import shared_task\n\n\n@shared_task\ndef export_audit(period: str) -> str:\n    \"\"\"Собрать выгрузку журнала за период и вернуть путь к файлу.\"\"\"\n    return f\"/exports/audit-{period}.csv\"\n",
+   "признак": "celery"
+  },
+  {
+   "id": "V2",
+   "вид": "нарушение",
+   "правило": "бд",
+   "файл": "backend/config/settings_fast_tests.py",
+   "создать": "\"\"\"Быстрые тесты без контейнера базы.\"\"\"\nfrom .settings import *  # noqa: F403\n\nDATABASES = {\n    \"default\": {\n        \"ENGINE\": \"django.db.backends.sqlite3\",\n        \"NAME\": \":memory:\",\n    }\n}\n",
+   "признак": "sqlite3"
+  },
+  {
+   "id": "V3",
+   "вид": "нарушение",
+   "правило": "секреты-вне-кода",
+   "файл": "backend/apps/notify/services/bot_defaults.py",
+   "создать": "\"\"\"Значения по умолчанию для бота уведомлений.\"\"\"\n\nBOT_NAME = \"portal_notify_bot\"\nbot_token = \"7012345678:AAHkPortalNotifyBotSecretValue\"\nPOLL_SECONDS = 25\n",
+   "признак": "AAHkPortalNotifyBotSecretValue"
+  },
+  {
+   "id": "V4",
+   "вид": "нарушение",
+   "правило": "секреты-в-url",
+   "файл": "backend/apps/integrations/webhook.py",
+   "создать": "\"\"\"Исходящий вебхук во внешнюю систему мониторинга.\"\"\"\nimport urllib.request\n\n\ndef send_alert(base: str, key: str, text: str) -> int:\n    \"\"\"Отправить тревогу; ключ доступа — в адресе запроса.\"\"\"\n    url = f\"{base}/api/alert?api_key={key}\"\n    with urllib.request.urlopen(url, data=text.encode(\"utf-8\"), timeout=10) as ответ:\n        return ответ.status\n",
+   "признак": "?api_key="
+  },
+  {
+   "id": "V5",
+   "вид": "нарушение",
+   "правило": "sql-только-параметры",
+   "файл": "backend/apps/servicedesk/services/quick_stats.py",
+   "создать": "\"\"\"Быстрая статистика по заявкам для главной.\"\"\"\nfrom django.db import connection\n\n\ndef count_for_queue(queue_code: str) -> int:\n    \"\"\"Число открытых заявок очереди.\"\"\"\n    with connection.cursor() as cursor:\n        cursor.execute(f\"SELECT count(*) FROM servicedesk_ticket WHERE queue = '{queue_code}'\")\n        return cursor.fetchone()[0]\n",
+   "признак": "cursor.execute(f\""
+  },
+  {
+   "id": "D1",
+   "вид": "документация",
+   "файл": "tools/check_links.py",
+   "создать": "#!/usr/bin/env python3\n\"\"\"Проверка ссылок в документах: каждая ссылка вида [текст](путь) ведёт на существующий файл.\n\nПримеры:\n    python3 tools/check_links.py             # все docs/ и specs/\n    python3 tools/check_links.py docs/        # только каталог\n\nКод выхода 0 — битых ссылок нет, 1 — есть (печатаются файл, строка и ссылка).\n\"\"\"\nimport pathlib\nimport re\nimport sys\n\nССЫЛКА = re.compile(r\"\\]\\(([^)#\\s]+)\")\n\n\ndef main() -> int:\n    корни = [pathlib.Path(п) for п in sys.argv[1:]] or [pathlib.Path(\"docs\"), pathlib.Path(\"specs\")]\n    битых = 0\n    for корень in корни:\n        for файл in sorted(корень.rglob(\"*.md\")):\n            for номер, строка in enumerate(файл.read_text(encoding=\"utf-8\").splitlines(), start=1):\n                for цель in ССЫЛКА.findall(строка):\n                    if \"://\" in цель:\n                        continue\n                    if not (файл.parent / цель).exists():\n                        print(f\"{файл}:{номер}: {цель}\")\n                        битых += 1\n    return 1 if битых else 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n",
+   "признак": "check_links.py",
+   "ожидание": "README (раздел «Команды») называет python3 tools/check_links.py"
+  }
+ ]
+}
