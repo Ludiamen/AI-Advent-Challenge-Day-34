@@ -2993,9 +2993,10 @@ class КонфигурацияMCP(unittest.TestCase):
         """Настоящий mcp-servers.json дня описан верно и секретов в себе не держит."""
         серверы = amcp.load(os.path.join(КОРЕНЬ_ДНЯ, "mcp-servers.json"))
         имена = [с.имя for с in серверы]
-        # День 31: свой сервер git (только чтение) — после agent-state; День 33: support и support-desk.
+        # День 31: свой сервер git (только чтение) — после agent-state; День 33: support и support-desk;
+        # День 34: files (чтение и черновик правок копии проекта).
         self.assertEqual(имена, ["tracker", "tracker-real", "scheduler", "pipeline", "docs",
-                                 "agent-state", "git", "support", "support-desk", "filesystem", "everything",
+                                 "agent-state", "git", "support", "support-desk", "files", "filesystem", "everything",
                                  "deepwiki", "github"])
         планировщик = next(с for с in серверы if с.имя == "scheduler")
         # Поля дня 18: «планирует» закрывает обход подтверждения через
@@ -7344,7 +7345,7 @@ print("bind-lifecycle-ok")
         self.assertEqual(run_tests.МОДУЛИ, (
             "tests", "test_gateway_validation", "test_service_journal_security", "test_telegram_offset",
             "test_telegram_reliability", "test_telegram_security", "test_devassist", "test_review",
-            "test_support",
+            "test_support", "test_files",
         ))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ошибка:
             run_tests._аргументы(["--живые"])
@@ -7488,7 +7489,7 @@ class МаршрутСерверов(unittest.TestCase):
     def test_описания_серверов_без_секретов(self):
         м, _ = self.маршрутизатор()
         описания = {о["имя"]: о for о in м.описания()}
-        self.assertEqual(len(описания), 13)   # День 31: + git; День 33: + support, support-desk
+        self.assertEqual(len(описания), 14)   # День 31: + git; День 33: + support, support-desk; День 34: + files
         self.assertTrue(описания["tracker-real"]["по_просьбе"])
         self.assertTrue(описания["pipeline"]["своё"])
         self.assertFalse(описания["github"]["готов"])
@@ -8019,7 +8020,7 @@ class АгентИОркестр(unittest.TestCase):
         with self.модель(_план_ответ("ц"), Reply(text="всё", model_key="тест")):
             self.агент.флоу("Просто спроси")
         состояние = self.агент.состояние_флоу()
-        self.assertEqual(len(состояние["серверы"]), 13)   # День 31: + git; День 33: + support, support-desk
+        self.assertEqual(len(состояние["серверы"]), 14)   # День 31: + git; День 33: + support, support-desk; День 34: + files
         self.assertEqual(len(состояние["правила"]["правила"]), 4)
         self.assertEqual(состояние["счётчики"]["флоу"], 1)
         self.assertEqual(состояние["бюджет"]["кругов"], оркестр_флоу.ПРЕДЕЛ_КРУГОВ)
@@ -8032,7 +8033,7 @@ class АгентИОркестр(unittest.TestCase):
                                model_key="тест")):
             маршрут = self.агент.маршрут_запроса("Что в работе?")
         self.assertEqual(маршрут["серверы"], ["tracker"])
-        self.assertEqual(len(маршрут["все_серверы"]), 13)   # День 31: + git; День 33: + support, support-desk
+        self.assertEqual(len(маршрут["все_серверы"]), 14)   # День 31: + git; День 33: + support, support-desk; День 34: + files
         self.assertEqual(self.ящик.вызовы, [])
 
     def test_включение_инструментов_переиспользует_ящик(self):
@@ -8110,7 +8111,7 @@ class НастройкиОркестровки(unittest.TestCase):
 
     def test_файл_проекта_описывает_одиннадцать_серверов(self):
         серверы = amcp.load(os.path.join(КОРЕНЬ_ДНЯ, "mcp-servers.json"))
-        self.assertEqual(len(серверы), 13)   # День 31: + git; День 33: + support, support-desk
+        self.assertEqual(len(серверы), 14)   # День 31: + git; День 33: + support, support-desk; День 34: + files
         self.assertTrue(all(с.описание for с in серверы))
         # У каждого готового сервера есть темы: без них не работает запасной
         # путь маршрутизатора, а он и нужен как раз тогда, когда модель молчит.

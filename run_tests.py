@@ -35,6 +35,7 @@ import tempfile
     "test_devassist",
     "test_review",
     "test_support",
+    "test_files",
 )
 
 # Новый security-тест должен входить в снимок до первого commit, но остальные

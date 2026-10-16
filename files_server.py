@@ -83,15 +83,34 @@ class ОшибкаЗапроса(ToolError):
 
 # --- окружение -------------------------------------------------------------------------------
 
+def _проект() -> Any:
+    """Копия проекта по projects.json (FILES_PROJECT, по умолчанию crm) — когда корень и база не заданы."""
+    from agent.files import workspace
+    return workspace.из_проекта(os.getenv("FILES_PROJECT") or "crm")
+
+
 def корень() -> str:
-    путь = os.path.abspath(os.path.expanduser(os.getenv("FILES_ROOT") or ""))
-    if not os.getenv("FILES_ROOT") or not os.path.isdir(os.path.join(путь, ".git")):
-        raise ОшибкаЗапроса(f"корень проекта не задан или не репозиторий git: {путь or '—'} (--корень или FILES_ROOT)")
+    путь = os.getenv("FILES_ROOT") or ""
+    if not путь:
+        try:
+            путь = _проект().каталог
+        except Exception as e:  # noqa: BLE001 — нет описания проекта: та же понятная ошибка
+            raise ОшибкаЗапроса(f"корень проекта не задан (--корень или FILES_ROOT): {e}") from e
+    путь = os.path.abspath(os.path.expanduser(путь))
+    if not os.path.isdir(os.path.join(путь, ".git")):
+        raise ОшибкаЗапроса(f"копии проекта нет: {путь} — её готовит ассистент (cli.py --файлы …)")
     return путь
 
 
 def база() -> str:
-    return os.getenv("FILES_BASE") or "HEAD"
+    if os.getenv("FILES_BASE"):
+        return os.environ["FILES_BASE"]
+    if not os.getenv("FILES_ROOT"):
+        try:
+            return _проект().база
+        except Exception:  # noqa: BLE001
+            pass
+    return "HEAD"
 
 
 def _окружение() -> dict[str, str]:
@@ -527,7 +546,8 @@ def main() -> int:
         os.environ["FILES_BASE"] = а.база
     if а.черновик:
         os.environ["FILES_DRAFT"] = os.path.abspath(а.черновик)
-    корень()
+    if а.корень:
+        корень()   # заданный явно корень проверяется до старта; по умолчанию — при первом вызове
     if а.http:
         сервер.run("streamable-http", host="127.0.0.1", port=а.http)
     else:
