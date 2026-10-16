@@ -209,7 +209,7 @@ if (!РЕЖИМ.startsWith('телеграм')) await начатьЗапись()
 
 console.log('страница:', await выполнить('document.title'));
 // На страницах сервиса Дня 30 выбора модели нет: модель у сервиса одна.
-if (!['сервис', 'показ', 'телеграм', 'телеграм31', 'телеграм32', 'показ32', 'поддержка', 'показ33'].includes(РЕЖИМ)) console.log('модель:', await выполнить(
+if (!['сервис', 'показ', 'телеграм', 'телеграм31', 'телеграм32', 'показ32', 'поддержка', 'показ33', 'файлы', 'показ34'].includes(РЕЖИМ)) console.log('модель:', await выполнить(
   `(() => { const с = document.getElementById('модель');
             с.value = ${JSON.stringify(МОДЕЛЬ)};
             с.dispatchEvent(new Event('change'));
@@ -2678,6 +2678,130 @@ if (РЕЖИМ === 'поддержка' || РЕЖИМ === 'показ33') {
   должно(await ждатьНаСтранице(`!!document.querySelector('.оценка button.да')`, 10000), 'u06: оценка 👍 не сохранилась');
   await пауза(ПАУЗА * 3);
 
+  if (process.env.MARKS) (await import('node:fs')).writeFileSync(process.env.MARKS, JSON.stringify({ожидания: метки}, null, 1));
+  await остановитьЗапись();
+  console.log(ошибки.length ? 'ошибки:\n  ' + ошибки.join('\n  ') : 'ошибок нет');
+  ws.close();
+  process.exit(ошибки.length ? 1 : 0);
+}
+
+if (РЕЖИМ === 'файлы' || РЕЖИМ === 'показ34') {
+  // День 34: ассистент файлов на странице /chat — /files цель. «файлы» — проверка, «показ34» — то же
+  // с подписями и паузами для записи. Цели — на уровне задачи: файлы ассистент находит сам.
+  const ПОКАЗ = РЕЖИМ === 'показ34';
+  const ПАУЗА = Number(process.env.PAUSE || (ПОКАЗ ? 3000 : 300));
+  const метки = [];
+  const должно = (условие, чего) => { if (!условие) ошибки.push(чего); };
+  for (const в of await (await fetch(`${CDP}/json/list`)).json())
+    if (в.type === 'page' && в.id !== цель.id) await fetch(`${CDP}/json/close/${в.id}`);
+  const подпись = async (сцена, текст) => {
+    console.log(`\n=== ${сцена} — ${текст}`);
+    if (!ПОКАЗ) return;
+    await выполнить(`(() => {
+      let п = document.getElementById('подпись-показа');
+      if (!п) { п = document.createElement('div'); п.id = 'подпись-показа';
+        п.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#0f172a;color:#f8fafc;' +
+          'padding:10px 18px;font:16px/1.45 system-ui,sans-serif;box-shadow:0 -2px 10px rgba(0,0,0,.25)';
+        document.body.appendChild(п); }
+      п.innerHTML = '<b>' + ${JSON.stringify(сцена)} + '</b> — ' + ${JSON.stringify(текст)}; return 'ок'; })()`);
+  };
+  const карточки = () => выполнить(`document.querySelectorAll('#чат-лента [data-файлы]').length`);
+  const последняя = () => выполнить(`(() => { const все = [...document.querySelectorAll('#чат-лента [data-файлы]')];
+    const к = все[все.length - 1]; if (!к) return null;
+    return {id: Number(к.dataset.файлы), статус: к.dataset.статус, текст: (к.querySelector('.текст') || {}).innerText || '',
+            находок: к.querySelectorAll('.находка').length, подтверждено: к.querySelectorAll('.находка[data-подтверждена="1"]').length,
+            diff: (к.querySelector('.diff') || {}).innerText || '', понято: (к.querySelector('.понято') || {}).innerText || '',
+            кнопки: !!к.querySelector('[data-применить]'), мета: [...к.querySelectorAll('.мета')].map(м => м.innerText).join(' | ')}; })()`);
+  const прокрутить = (селектор, блок = 'start') => выполнить(`(() => { const все = document.querySelectorAll(${JSON.stringify(селектор)});
+    const е = все[все.length - 1]; if (е) е.scrollIntoView({behavior: 'smooth', block: ${JSON.stringify(блок)}}); return !!е; })()`);
+  const цельФайлов = async (текст) => {
+    const было = await карточки();
+    if (ПОКАЗ) {
+      for (let i = 1; i <= текст.length; i += 3) {
+        await выполнить(`(() => { const п = document.getElementById('чат-реплика'); п.value = ${JSON.stringify(текст)}.slice(0, ${i}); return 1; })()`);
+        await пауза(30);
+      }
+    }
+    await выполнить(`(() => { const п = document.getElementById('чат-реплика'); п.value = ${JSON.stringify(текст)};
+      document.getElementById('чат-отправить').click(); return 'ок'; })()`);
+    const начало = Date.now();
+    const этапы = new Set();
+    while (Date.now() - начало < 600000) {
+      await пауза(1000);
+      for (const э of await выполнить(`[...document.querySelectorAll('#чат-ход .этап-строка')].map(с => с.innerText)`) || [])
+        этапы.add(э.replace(/\s+·\s+\d+ с.*$/, ''));
+      if (await карточки() > было) break;
+      const сбой = await выполнить(`(document.querySelector('#чат-ход .ошибка') || {}).innerText || ''`);
+      if (сбой) { ошибки.push('/files: ' + сбой); break; }
+    }
+    метки.push({начало, конец: Date.now(), что: текст.slice(0, 60)});
+    const к = await последняя() || {};
+    console.log(`задача ${к.id}: ${к.статус} · ${(к.понято || '').replace(/\s+/g, ' ').slice(0, 160)}`);
+    console.log(`  итог: ${(к.текст || '').replace(/\s+/g, ' ').slice(0, 260)}`);
+    console.log(`  находок ${к.находок}, подтверждено ${к.подтверждено}; ход: ${[...этапы].length} строк, напр. ${[...этапы].slice(0, 4).join(' | ').slice(0, 200)}`);
+    if (к.diff) console.log(`  diff: ${к.diff.split('\n').filter(с => /^[+-][^+-]/.test(с)).slice(0, 4).join(' ⏎ ').slice(0, 300)}`);
+    должно([...этапы].some(э => /files_/.test(э)), `/files «${текст.slice(0, 40)}»: под полем ввода не было хода с вызовами инструментов`);
+    return к;
+  };
+  const решить = async (id, действие) => {
+    await выполнить(`(() => { window.prompt = () => 'показ: не нужно'; return 1; })()`);
+    await выполнить(`(document.querySelector('[data-${действие === 'apply' ? 'применить' : 'отклонить'}="${id}"]').click(), 'ок')`);
+    return ждатьНаСтранице(`(() => { const к = document.querySelector('[data-файлы="${id}"]');
+      return к && к.dataset.статус !== 'ждёт подтверждения' ? к.dataset.статус : null; })()`, 30000);
+  };
+
+  await наСтраницеЧата('/chat');
+  await открытьСессию(ПОКАЗ ? 'показ-34' : 'проверка-файлов');
+  await новыйРазговорНаСтранице();
+  должно(/\/files/.test(await выполнить(`(document.getElementById('подсказка-помощи') || {}).innerText || ''`)), 'нет подсказки про /files');
+
+  // Сцена 1 — найти все использования.
+  await подпись('Сцена 1', 'День 34: ассистент для работы с файлами проекта. Цель — а не «открой файл»: ассистент сам ищет и читает файлы копии CRM через свой MCP-сервер files');
+  await пауза(ПАУЗА);
+  const к1 = await цельФайлов('/files Найди все места в проекте, где используется функция scan_file (проверка загружаемых файлов на вирусы), и опиши, как они связаны.');
+  должно(к1.статус === 'готово' && к1.подтверждено >= 8, `сцена 1: ожидался отчёт с ≥ 8 подтверждёнными находками (${к1.статус}, ${к1.подтверждено})`);
+  await прокрутить('#чат-лента [data-файлы]');
+  await пауза(ПАУЗА * 3);
+  if (ПОКАЗ) { await подпись('Сцена 1', 'Находки — файл, строка и дословная цитата: каждую проверил код (✓); ход — вызовы инструментов files'); await выполнить(`(() => { document.getElementById('чат-лента').scrollBy({top: 420, behavior: 'smooth'}); return 1; })()`); await пауза(ПАУЗА * 2); }
+
+  // Сцена 2 — обновить документацию по изменениям в коде, применить.
+  await подпись('Сцена 2', 'Обновить документацию по изменениям последнего коммита (ветка посеянных случаев): ассистент смотрит коммит, читает README и готовит правку — diff');
+  await пауза(ПАУЗА);
+  const к2 = await цельФайлов('/files --база cases/day34 Обнови документацию проекта по изменениям последнего коммита.');
+  должно(к2.статус === 'ждёт подтверждения' && к2.кнопки, `сцена 2: черновик не ждёт подтверждения (${к2.статус})`);
+  должно(/check_links/.test(к2.diff), 'сцена 2: в diff нет check_links');
+  await прокрутить('#чат-лента .diff', 'center');
+  await пауза(ПАУЗА * 3);
+  await подпись('Сцена 2', 'Человек подтверждает: «Применить» — правка записывается в копию проекта коммитом на ветке assistant/N');
+  await пауза(ПАУЗА);
+  const с2 = await решить(к2.id, 'apply');
+  console.log('после «Применить»:', с2, (await последняя()).мета.slice(0, 200));
+  должно(с2 === 'применена', `сцена 2: после «Применить» статус ${с2}`);
+  await пауза(ПАУЗА * 2);
+
+  // Сцена 3 — проверить правила, отклонить.
+  await подпись('Сцена 3', 'Проверить код на соответствие конституции проекта: нарушения с правилом и цитатой и исправления — diff');
+  await пауза(ПАУЗА);
+  const к3 = await цельФайлов('/files --база cases/day34 Проверь, нет ли в коде backend секретов, записанных прямо в код или в адреса запросов, и подстановки данных в текст SQL. Исправь найденное.');
+  должно(к3.подтверждено >= 2, `сцена 3: подтверждённых нарушений ${к3.подтверждено}`);
+  await прокрутить('#чат-лента [data-файлы]');
+  await пауза(ПАУЗА * 3);
+  if (к3.кнопки) {
+    await прокрутить('#чат-лента .diff', 'center');
+    await пауза(ПАУЗА * 2);
+    await подпись('Сцена 3', '«Отклонить» — черновик закрывается, файлы проекта не меняются');
+    await пауза(ПАУЗА);
+    const с3 = await решить(к3.id, 'reject');
+    должно(с3 === 'отклонена', `сцена 3: после «Отклонить» статус ${с3}`);
+    await пауза(ПАУЗА * 2);
+  }
+
+  // После перезагрузки карточки на месте.
+  await наСтраницеЧата('/chat');
+  await открытьСессию(ПОКАЗ ? 'показ-34' : 'проверка-файлов');
+  const после = await карточки();
+  console.log('после перезагрузки карточек /files:', после);
+  должно(после === 3, `после перезагрузки карточек ${после}, а не 3`);
   if (process.env.MARKS) (await import('node:fs')).writeFileSync(process.env.MARKS, JSON.stringify({ожидания: метки}, null, 1));
   await остановитьЗапись();
   console.log(ошибки.length ? 'ошибки:\n  ' + ошибки.join('\n  ') : 'ошибок нет');

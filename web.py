@@ -1366,6 +1366,9 @@ def api_chat_say():
     ревью = _ревью_в_чате(сессия, текст, модель, bool(данные.get("stream")))
     if ревью is not None:
         return ревью
+    файлы = _файлы_в_чате(сессия, текст, модель, bool(данные.get("stream")))
+    if файлы is not None:
+        return файлы
     if данные.get("stream"):
         return _ход_чата_потоком(сессия, текст, модель)
     прежняя = agent.model_key
@@ -1482,6 +1485,94 @@ def _ревью_в_чате(сессия: str, текст: str, модель: st
             yield _json.dumps(событие, ensure_ascii=False, default=str) + "\n"
 
     return Response(stream_with_context(строки()), mimetype="application/x-ndjson")
+
+
+def _файлы_в_чате(сессия: str, текст: str, модель: str, поток: bool) -> Response | None:
+    """`/files цель` на странице чата (День 34, spec FR-08): тот же ассистент, что `--файлы-цель`
+    консоли; итог — карточка в ленте сессии с diff и «Применить» / «Отклонить». None — это не /files."""
+    import json as _json
+    import queue
+    from agent.devassist import command as help_command
+    from agent.files import command
+    from agent.files.workspace import ОшибкаКопии
+    from agent.local import progress
+    try:
+        разбор = command.разобрать(текст)
+    except command.ОшибкаКоманды as exc:
+        return jsonify({"error": str(exc)}), 400
+    if разбор is None:
+        return None
+    цель, база = разбор
+
+    def выполнить() -> dict:
+        з = command.ассистент(модель, "веб").выполнить(цель, база=база)
+        command.в_историю(agent.чат(сессия), з, help_command.база_памяти())
+        return {"событие": "готово", "files": command.карточка(з), "state": _состояние_чата(сессия)}
+
+    if not поток:
+        try:
+            return jsonify(выполнить())
+        except (ValueError, ОшибкаКопии) as exc:
+            return jsonify({"error": str(exc)}), 400
+    очередь: queue.Queue = queue.Queue()
+
+    def работать() -> None:
+        метка = progress.наблюдать(очередь.put)
+        try:
+            # Круги и вызовы инструментов приходят наблюдателю progress (этапы «файлы:…» с подписью).
+            очередь.put(выполнить())
+        except (ValueError, ОшибкаКопии) as exc:
+            очередь.put({"событие": "ошибка", "error": str(exc)})
+        except Exception as exc:   # noqa: BLE001 — поток не должен умереть молча
+            очередь.put({"событие": "ошибка", "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            progress.снять(метка)
+            очередь.put(None)
+
+    threading.Thread(target=работать, daemon=True).start()
+
+    def строки():
+        while (событие := очередь.get()) is not None:
+            yield _json.dumps(событие, ensure_ascii=False, default=str) + "\n"
+
+    return Response(stream_with_context(строки()), mimetype="application/x-ndjson")
+
+
+@app.get("/api/files/<int:n>")
+def api_files_task(n: int):
+    """Задача ассистента файлов: итог, находки, diff (как --файлы-показать)."""
+    from agent.files import command, task
+    try:
+        return jsonify(command.карточка(task.Хранилище().загрузить(n)))
+    except KeyError as exc:
+        return jsonify({"error": exc.args[0]}), 404
+
+
+@app.post("/api/files/<int:n>/<action>")
+def api_files_decide(n: int, action: str):
+    """«Применить» — черновик задачи в копию проекта (коммит на ветке assistant/N); «Отклонить» —
+    файлы не меняются. Тот же путь, что --файлы-применить / --файлы-отклонить консоли."""
+    from agent.devassist import command as help_command
+    from agent.files import command, task, workspace
+    действие = action          # имя параметра пути — латиницей: кириллическое Werkzeug не разбирает
+    if действие not in ("apply", "reject"):
+        return jsonify({"error": "действие — apply или reject"}), 404
+    данные = request.get_json(silent=True) or {}
+    хр = task.Хранилище()
+    try:
+        if действие == "apply":
+            копия = workspace.из_проекта(хр.загрузить(n).проект)
+            копия.подготовить()
+            з = хр.применить(n, копия, кто="веб")
+        else:
+            з = хр.отклонить(n, str(данные.get("reason") or "")[:300], кто="веб")
+    except KeyError as exc:
+        return jsonify({"error": exc.args[0]}), 404
+    except (ValueError, workspace.ОшибкаКопии) as exc:
+        return jsonify({"error": str(exc)}), 409
+    command.решение_в_метрики(з, "применить" if действие == "apply" else "отклонить", "веб")
+    command.обновить_в_ленте(help_command.база_памяти(), з)
+    return jsonify({"files": command.карточка(з)})
 
 
 def _ход_чата_потоком(сессия: str, текст: str, модель: str) -> Response:

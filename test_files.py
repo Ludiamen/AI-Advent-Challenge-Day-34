@@ -334,6 +334,16 @@ class ПроверкаКодом(_СКопией):
         self.assertEqual(находки[1]["строка"], 5)                    # поправлена по цитате
         self.assertIn("строка поправлена", находки[1]["пометка"])
 
+    def test_находка_о_файле_и_о_строке_базы(self) -> None:
+        from agent.files import check
+        self.f.заменить("README.md", "| docs/ | документы |", "| docs/ | документы и API |")
+        н = check.находки([{"файл": "docs/api.md", "строка": 1, "цитата": "docs/api.md"},
+                           {"файл": "README.md", "строка": 7, "цитата": "| docs/ | документы |"},
+                           {"файл": "README.md", "строка": 7, "цитата": "| docs/ | документы и API |"}])
+        self.assertEqual([x["подтверждена"] for x in н], [True, True, True])
+        self.assertEqual(н[0]["пометка"], "файл существует")
+        self.assertIn("в базе", н[1]["пометка"])
+
     def test_черновик(self) -> None:
         from agent.files import check
         self.f.заменить("docs/api.md", "проверяет файл.", "проверяет файл антивирусом.")
@@ -459,3 +469,86 @@ class АссистентФайлов(_СКопией):
         з2 = а.повторить(з1.id)
         self.assertEqual((з2.цель, з2.база, з2.повтор_от), (з1.цель, з1.база, з1.id))
         self.assertEqual(з2.сравнение["находки_совпадение"], 1.0)
+
+
+class КомандаИВеб(_СКопией):
+    """spec FR-07, FR-08; plan D-06, D-07: /files в чате, карточка, «Применить» / «Отклонить» — как в консоли."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from unittest import mock
+        self.память = os.path.join(self.tmp.name, "memory")
+        self._память_было = os.environ.get("MEMORY_DIR")
+        os.environ["MEMORY_DIR"] = self.память
+        import importlib
+        import web
+        self.web = importlib.reload(web)
+        self.клиент = self.web.app.test_client()
+        from agent.files import task
+        from agent.files.assistant import Ассистент
+        хр = task.Хранилище()
+        self.хр = хр
+        итог = АссистентФайлов.ИТОГ
+
+        def ассистент(модель="", канал="веб", ход=None, проект="crm"):
+            return Ассистент(self.к, хр, клиент=ЗаглушкаМодели([
+                ответ(вызовы=[("files_read", {"path": "docs/api.md"})]),
+                ответ(вызовы=[("files_edit", {"path": "docs/api.md", "old": "проверяет файл.",
+                                              "new": "проверяет файл на вирусы."})]),
+                ответ(итог)]), модель="ds-flash", канал=канал)
+        self.заплатки = [mock.patch("agent.files.command.ассистент", ассистент),
+                         mock.patch("agent.files.workspace.из_проекта", lambda *a, **k: self.к)]
+        for з in self.заплатки:
+            з.start()
+
+    def tearDown(self) -> None:
+        for з in self.заплатки:
+            з.stop()
+        if self._память_было is None:
+            os.environ.pop("MEMORY_DIR", None)
+        else:
+            os.environ["MEMORY_DIR"] = self._память_было
+        super().tearDown()
+
+    def test_разбор_команды(self) -> None:
+        from agent.files import command
+        self.assertIsNone(command.разобрать("/help вопрос"))
+        self.assertEqual(command.разобрать("/files Найди scan_file"), ("Найди scan_file", ""))
+        self.assertEqual(command.разобрать("/files --база cases/day34 Обнови README"), ("Обнови README", "cases/day34"))
+        with self.assertRaises(command.ОшибкаКоманды):
+            command.разобрать("/files")
+        with self.assertRaises(command.ОшибкаКоманды):
+            command.разобрать("/files --база ../x цель")
+
+    def test_цель_карточка_применить(self) -> None:
+        р = self.клиент.post("/api/chat/say", json={"session": "т", "text": "/files Уточни документацию по scan_file"})
+        self.assertEqual(р.status_code, 200, р.get_data(as_text=True))
+        ф = р.get_json()["files"]
+        self.assertEqual((ф["статус"], ф["изменены"]), ("ждёт подтверждения", ["docs/api.md"]))
+        self.assertIn("+Функция `scan_file` проверяет файл на вирусы.", ф["diff"])
+        лента = self.клиент.get("/api/chat?session=т").get_json()["помощь"]
+        self.assertEqual([з["вид"] for з in лента], ["файлы"])
+        р = self.клиент.post(f"/api/files/{ф['id']}/apply", json={})
+        self.assertEqual(р.status_code, 200, р.get_data(as_text=True))
+        self.assertEqual(р.get_json()["files"]["ветка"], f"assistant/{ф['id']}")
+        self.assertIn("на вирусы", git(self.копия_путь, "show", f"assistant/{ф['id']}:docs/api.md"))
+        лента = self.клиент.get("/api/chat?session=т").get_json()["помощь"]
+        self.assertEqual(лента[0]["статус"], "применена")                 # карточка в ленте обновлена
+        self.assertEqual(self.клиент.post(f"/api/files/{ф['id']}/apply", json={}).status_code, 409)
+        self.assertEqual(self.клиент.get(f"/api/files/{ф['id']}").get_json()["статус"], "применена")
+
+    def test_отклонить_и_ошибки(self) -> None:
+        ф = self.клиент.post("/api/chat/say", json={"session": "т", "text": "/files цель"}).get_json()["files"]
+        р = self.клиент.post(f"/api/files/{ф['id']}/reject", json={"reason": "не нужно"})
+        self.assertEqual(р.get_json()["files"]["статус"], "отклонена")
+        self.assertEqual(git(self.копия_путь, "branch", "--list", "assistant/*"), "")
+        self.assertEqual(self.клиент.post("/api/chat/say", json={"session": "т", "text": "/files"}).status_code, 400)
+        self.assertEqual(self.клиент.get("/api/files/99").status_code, 404)
+        self.assertEqual(self.клиент.post(f"/api/files/{ф['id']}/delete", json={}).status_code, 404)
+        from agent.files import metrics
+        self.assertEqual([с["решение"] for с in metrics.прочитать(self.хр.метрики) if с["событие"] == "решение"],
+                         ["отклонить"])
+
+    def test_справка_чата(self) -> None:
+        from agent.devassist import command
+        self.assertIn("/files цель", command.справка("crm"))
