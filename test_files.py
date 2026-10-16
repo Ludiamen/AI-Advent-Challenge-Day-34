@@ -591,3 +591,20 @@ class ДоработкаПоПроверке(_СКопией):
         self.assertEqual(з.проверка["adr"]["docs/decisions/0002-x.md"], [])
         self.assertEqual(з.статус, "ждёт подтверждения")
         self.assertTrue(any("доработка" in п for п in з.пометки))
+
+
+class ГраницаЦели(_СКопией):
+    """Цель о документации: правки кода убираются из черновика кодом, а не только правилом промпта."""
+
+    def test_правка_кода_убрана(self) -> None:
+        from agent.files.assistant import Ассистент
+        итог = json.dumps({"итог": "документация обновлена", "вид": "документация", "находки": []}, ensure_ascii=False)
+        модель = ЗаглушкаМодели([
+            ответ(вызовы=[("files_read", {"path": "docs/api.md"}), ("files_read", {"path": "app/service.py"})]),
+            ответ(вызовы=[("files_edit", {"path": "docs/api.md", "old": "проверяет файл.", "new": "проверяет файл на вирусы."}),
+                          ("files_edit", {"path": "app/service.py", "old": "def upload(path):", "new": "def upload(path, user):"})]),
+            ответ(итог)])
+        з = Ассистент(self.к, self.хр, клиент=модель, модель="ds-flash").выполнить("Обнови документацию по коду")
+        self.assertEqual(з.изменены, ["docs/api.md"])
+        self.assertTrue(any("правки вне цели убраны" in п and "app/service.py" in п for п in з.пометки))
+

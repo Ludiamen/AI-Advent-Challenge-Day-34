@@ -1570,7 +1570,6 @@ def api_files_decide(n: int, action: str):
         return jsonify({"error": exc.args[0]}), 404
     except (ValueError, workspace.ОшибкаКопии) as exc:
         return jsonify({"error": str(exc)}), 409
-    command.решение_в_метрики(з, "применить" if действие == "apply" else "отклонить", "веб")
     command.обновить_в_ленте(help_command.база_памяти(), з)
     return jsonify({"files": command.карточка(з)})
 

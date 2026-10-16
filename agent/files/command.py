@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 from typing import Any, Callable
 
 _FILES = re.compile(r"^/files(?:@[\w_]+)?(?:\s+--база\s+(?P<база>\S+))?(?:\s+(?P<цель>.+))?\s*$", re.I | re.S)
@@ -98,9 +97,3 @@ def обновить_в_ленте(база: str, з: Any) -> int:
             os.replace(временный, путь)
             обновлено += 1
     return обновлено
-
-
-def решение_в_метрики(з: Any, решение: str, канал: str) -> None:
-    from agent.files import metrics, task
-    metrics.записать({"событие": "решение", "задача": з.id, "канал": канал, "решение": решение,
-                      "время": time.strftime("%Y-%m-%dT%H:%M:%S")}, task.Хранилище().метрики)
