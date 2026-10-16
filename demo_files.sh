@@ -4,7 +4,7 @@
 # там свой клон CRM на базовом коммите и ветка посеянных случаев — рабочая копия CRM владельца и
 # память проекта не трогаются. Chrome — свой профиль, headless; запись — кадрами самого Chrome
 # (CDP Page.startScreencast): в неё попадает только страница. После показа временная память
-# удаляется.
+# удаляется. Ожидания модели — в ускоренной копии рядом с записью (×6, demo_speedup.py).
 #
 # Сцены (/chat, команда /files): найти все использования scan_file; обновить документацию по
 # изменениям последнего коммита (ветка случаев) → «Применить»; проверить секреты и SQL → «Отклонить».
@@ -84,8 +84,19 @@ CDP="http://127.0.0.1:$DEBUG_PORT" PAUSE="$PAUSE" MARKS="$SCRATCH/marks.json" RE
 SHOW_CODE=$?
 
 if [ "$RECORD" = 1 ] && [ -f "$FILE" ]; then
+  REC_START_MS="$(cat "$FILE.start" 2>/dev/null || echo 0)"
   rm -f "$FILE.start"
   echo "4/4 Запись: $FILE ($(du -h "$FILE" | cut -f1))"
+  # Ожидания модели (метки водителя) — ускоренная копия ×6 рядом с записью (demo_speedup.py).
+  if [ -f "$SCRATCH/marks.json" ]; then
+    "$PY" - "$SCRATCH/marks.json" "$REC_START_MS" "${FILE%.mp4}-метки.json" <<'PYCODE'
+import json, sys
+данные = json.load(open(sys.argv[1], encoding="utf-8"))
+данные["старт_записи"] = int(sys.argv[2])
+json.dump(данные, open(sys.argv[3], "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+PYCODE
+    "$PY" "$ROOT/demo_speedup.py" "$FILE" "${FILE%.mp4}-метки.json" --раз 6 --надпись "ассистент работает с файлами (облако ds-flash)" | tail -1
+  fi
 else
   echo "4/4 Готово"
 fi
